@@ -1,6 +1,3 @@
-# 大体量实验数据不进本仓库 (agentic_rsr 以 submodule 引用上游)
-/output/
-
 # Python
 __pycache__/
 *.py[cod]
@@ -9,9 +6,6 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
-
-# 实验产物
-active_sysid/runs/
 
 # 日志与临时文件
 *.log

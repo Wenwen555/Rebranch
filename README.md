@@ -37,7 +37,7 @@ T10 设两个任务轨道：
 
 ## 代码结构与运行方法
 
-仓库核心目录包括 `rebranch/tasks`、`rebranch/sim`、`rebranch/baselines`、`rebranch/eval` 与 `scripts`，同时保留早期的 `active_sysid`、`preview_tools` 与 `agentic_rsr` 原型实现。
+仓库核心目录包括 `rebranch/tasks`、`rebranch/sim`、`rebranch/baselines`、`rebranch/eval` 与 `scripts`。
 
 环境安装与初始化：
 
