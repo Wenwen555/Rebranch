@@ -16,3 +16,8 @@ active_sysid/runs/
 # 日志与临时文件
 *.log
 MUJOCO_LOG.TXT
+
+# ReBranch
+.venv-kinder/
+.cache/
+outputs/

@@ -1,0 +1,4 @@
+name: ablation_no_branch_verify
+method: rebranch
+rebranch_overrides:
+  no_branch_verify: true

@@ -1,0 +1,25 @@
+# M2 Real-LLM Benchmark configuration (T2 & T4, 50 hidden + 10 OOD, 3 seeds)
+name: m2_benchmark
+output_dir: outputs/m2
+tasks:
+  - t2_cup
+  - t4_cabinet
+methods:
+  - rebranch
+  - uniform_dr
+  - single_twin
+  - oracle_twin
+llm:
+  provider: codex
+  model: gpt-6.1-sol
+  effort: low
+  cache_dir: .cache/rebranch_llm/m2
+eval:
+  workers: 16
+  n_hidden: 50
+  n_ood: 10
+  seeds: [0, 1, 2]
+  max_rollouts: 1800
+  max_llm_calls: 8
+  max_rounds: 3
+  n_ce_samples: 60

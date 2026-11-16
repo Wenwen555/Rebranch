@@ -1,0 +1,21 @@
+# PiPER-X joint-current proprioception & gripper noise calibration model.
+# Used by rebranch.api.noise.JointNoiseModel in both simulation and calibration validation.
+arm:
+  coulomb_nm: [0.18, 0.22, 0.16, 0.10, 0.08, 0.06]
+  stiction_vel_eps: 0.02
+  viscous_nms: [0.04, 0.05, 0.04, 0.02, 0.015, 0.01]
+  bias_drift_std_nm: [0.05, 0.06, 0.05, 0.03, 0.025, 0.02]
+  gain_error_std: [0.015, 0.015, 0.015, 0.02, 0.02, 0.02]
+  torque_quant_nm: [0.015, 0.015, 0.015, 0.008, 0.008, 0.006]
+  noise_std_nm: [0.025, 0.030, 0.025, 0.015, 0.012, 0.010]
+  lpf_cutoff_hz: 18.0
+  dt: 0.002
+
+gripper:
+  width_noise_std_m: 0.0005
+  width_quant_m: 0.0002
+  width_min_m: 0.0
+  width_max_m: 0.07
+  effort_noise_std_n: 0.15
+  effort_quant_n: 0.05
+  effort_bias_std_n: 0.10

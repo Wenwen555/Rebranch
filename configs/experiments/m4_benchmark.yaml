@@ -1,0 +1,41 @@
+# M4 Full Benchmark & Ablation Suite configuration (T1-T8, all baselines + 6 ablations)
+name: m4_benchmark
+output_dir: outputs/m4
+tasks:
+  - t1_eccentric_box
+  - t2_cup
+  - t3_push_can
+  - t4_cabinet
+  - t5_drawer
+  - t6_valve
+  - t7_peg
+  - t8_card
+methods:
+  - rebranch
+  - single_twin
+  - uniform_dr
+  - physcap
+  - twin_mpc
+  - oneshot_calib
+  - oracle_twin
+ablations:
+  - random_ce
+  - worst_ce
+  - no_retune_or_branch
+  - no_lifting
+  - no_branch_verify
+  - physcap_primitives
+llm:
+  provider: codex
+  model: gpt-6.1-sol
+  effort: low
+  cache_dir: .cache/rebranch_llm/m4
+eval:
+  workers: 16
+  n_hidden: 50
+  n_ood: 10
+  seeds: [0, 1, 2]
+  max_rollouts: 1800
+  max_llm_calls: 8
+  max_rounds: 3
+  n_ce_samples: 60

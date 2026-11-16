@@ -1,0 +1,14 @@
+diff --git a/src/kinder/__init__.py b/src/kinder/__init__.py
+index bb3914c..1021adf 100644
+--- a/src/kinder/__init__.py
++++ b/src/kinder/__init__.py
+@@ -66,7 +66,8 @@ def register_all_environments() -> None:
+     # NOTE: ids must start with "kinder/" to be properly registered.
+ 
+     # Detect headless mode (no DISPLAY) and pick that platform's offscreen backend.
+-    if not os.environ.get("DISPLAY"):
++    # Preserve an explicit backend, including EGL on the ReBranch host.
++    if not os.environ.get("DISPLAY") and not os.environ.get("MUJOCO_GL"):
+         if sys.platform == "darwin":
+             # cgl is the macOS counterpart of osmesa below. glfw would open an
+             # NSWindow, which is both pointless with no display and fatal when the

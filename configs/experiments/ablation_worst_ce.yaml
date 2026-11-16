@@ -1,0 +1,4 @@
+name: ablation_worst_ce
+method: rebranch
+rebranch_overrides:
+  worst_ce: true

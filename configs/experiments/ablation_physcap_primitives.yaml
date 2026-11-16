@@ -1,0 +1,4 @@
+name: ablation_physcap_primitives
+method: rebranch
+rebranch_overrides:
+  physcap_primitives: true

@@ -1,0 +1,4 @@
+name: ablation_no_lifting
+method: rebranch
+rebranch_overrides:
+  no_lifting: true
