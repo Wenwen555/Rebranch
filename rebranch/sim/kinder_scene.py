@@ -79,6 +79,12 @@ def build_hidden_mass_balance_model(theta: dict[str, float]) -> mujoco.MjModel:
     from kinder.envs.dynamic3d.objects.primitive_objects import Cube
 
     spec = mujoco.MjSpec.from_file(str(DEFAULT_PIPERX_XML))
+    # Keep dropped cubes in the physical scene; otherwise gravity sends later
+    # object-pose targets arbitrarily far below the robot.
+    spec.worldbody.add_geom(
+        name="floor", type=mujoco.mjtGeom.mjGEOM_PLANE,
+        size=(1.0, 1.0, 0.1), rgba=(0.2, 0.2, 0.2, 1.0),
+    )
     add_table(spec, pos=(0.35, 0.0, 0.0), size=(0.18, 0.25, SUPPORT_Z))
     root = ET.fromstring(spec.to_xml())
     compiler = root.find("compiler")
