@@ -8,6 +8,10 @@ ReBranch（Python 包 `rebranch`，要求 Python >= 3.11，当前验证环境为
 
 在执行环境能力上，ReBranch 与 AgenticGenPlan（AGP）默认均限制为 50000 行 Python；AGP 可原生调用 `numpy`/`scipy`，ReBranch 仅注入 `math`。
 
+### 候选任务：`contact_insertion`（开发中）
+
+该模块针对把插销插入未固定插座的接触操作，公开 `peg`、`socket_box` 与 `hole` 真实位姿。作为开发中物理候选，在 SE3 修正后的 3 个开发条件中 `oracle` 与反馈控制各通过 2/3，目前尚未通过物理准入，未进入正式 LLM 比较。
+
 ## 基准任务：T10 隐藏质量平衡梁
 
 T10 是受 KinDER 启发的 PiPER-X 平台变体，直接使用 KinDER `GeneratedSeesaw`/`Cube` 原生 MJCF 与资产（固定上游 commit `5b2dbac482142b879b48449b3fa2af63f641aed3`，接入说明见 [KINDER.md](KINDER.md)）。场景在 MuJoCo 中包含真实 hinge、弹簧与接触动力学：

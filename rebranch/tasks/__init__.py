@@ -12,6 +12,7 @@ from rebranch.tasks.t6_valve import T6ValveTask
 from rebranch.tasks.t7_peg import T7PegTask
 from rebranch.tasks.t8_card import T8CardTask
 from rebranch.tasks.t9_supported_tray import T9SupportedTrayTask
+from rebranch.tasks.contact_insertion import ContactInsertionTask
 from rebranch.tasks.hidden_mass_balance_beam import (
     HiddenMassBalanceBeamATask,
     HiddenMassBalanceBeamBTask,
@@ -27,6 +28,7 @@ TASKS: dict[str, type[TaskBackend]] = {
     "t7_peg": T7PegTask,
     "t8_card": T8CardTask,
     "t9_supported_tray": T9SupportedTrayTask,
+    "contact_insertion": ContactInsertionTask,
     "t10_hidden_mass_balance_beam_a": HiddenMassBalanceBeamATask,
     "t10_hidden_mass_balance_beam_b": HiddenMassBalanceBeamBTask,
 }
@@ -63,6 +65,7 @@ __all__ = [
     "T7PegTask",
     "T8CardTask",
     "T9SupportedTrayTask",
+    "ContactInsertionTask",
     "HiddenMassBalanceBeamATask",
     "HiddenMassBalanceBeamBTask",
     "make_task",
