@@ -143,9 +143,9 @@ def test_normal_candidate_completion_is_not_an_automatic_error():
 
 def test_runner_exposes_agentic_method_and_frozen_runtime_without_llm():
     actions = [
-        '{"tool":"inspect_task"}',
-        '{"tool":"write_policy","source":"def run(api):\\n    api.get_ee_pose()\\n"}',
-        '{"tool":"freeze_policy"}',
+        '{"tool":"inspect_task","arguments":{}}',
+        '{"tool":"write_policy","arguments":{"source":"def run(api):\\n    api.get_ee_pose()\\n"}}',
+        '{"tool":"freeze_policy","arguments":{}}',
     ]
     out = run_single_method("toy_retune", "agentic_genplan", MockLLMClient(actions),
         max_rollouts=1, max_llm_calls=3, n_hidden=0, n_ood=0,

@@ -50,3 +50,15 @@ def test_t9_probe_is_per_object_paired_continuous_and_feedback_checks_while_held
     trial = feedback[feedback.index("def lower_trial_while_held"):feedback.index("def run(api):")]
     assert trial.index("get_object_pose(\"tray\")") < trial.index("api.open_gripper")
     assert "get_object_pose(\"tray\")[\"quat\"]" in feedback
+
+
+def test_t9_registered_backend_contract():
+    """T9 stays independently registered as the M3 core registry grows."""
+    from rebranch.tasks import TASKS, make_task
+
+    task = make_task("t9_supported_tray")
+    assert TASKS[task.name] is T9SupportedTrayTask
+    assert task.requires_branching
+    assert task.obs_scale and task.obs_api_map
+    check_policy_source(task.draft_policy)
+    check_policy_source(task.oracle_policy(task.param_space.nominal()))

@@ -16,7 +16,7 @@ from rebranch.exec.evaluator import Evaluator
 from rebranch.exec.sandbox import check_policy_source, run_policy
 from rebranch.sim.backend import SNAPSHOT_KEYS, EpisodeResult
 
-EXPECTED_TASK_NAMES = (
+M3_CORE_TASKS = (
     "t1_eccentric_box",
     "t2_cup",
     "t3_push_can",
@@ -31,8 +31,8 @@ EXPECTED_TASK_NAMES = (
 def test_task_registry_and_zero_sensor_leak() -> None:
     from rebranch.tasks import TASKS, make_task
 
-    assert tuple(TASKS.keys()) == EXPECTED_TASK_NAMES
-    for idx, name in enumerate(EXPECTED_TASK_NAMES, start=1):
+    assert set(M3_CORE_TASKS).issubset(TASKS)
+    for idx, name in enumerate(M3_CORE_TASKS, start=1):
         t = make_task(name)
         t_alias = make_task(f"t{idx}")
         assert t.name == name
@@ -85,7 +85,7 @@ def test_determinism_and_snapshot_keys() -> None:
 def test_distractors_are_physics_invariant() -> None:
     from rebranch.tasks import make_task
 
-    for name in EXPECTED_TASK_NAMES:
+    for name in M3_CORE_TASKS:
         task = make_task(name)
         base = task.param_space.nominal()
         perturbed = dict(base)
@@ -111,7 +111,7 @@ def _run_oracle_worker(args: tuple[str, dict, int]) -> object:
     return run_policy(task.oracle_policy(th), task.make_episode(th, seed=seed), th, seed=seed)
 
 
-@pytest.mark.parametrize("task_name", EXPECTED_TASK_NAMES)
+@pytest.mark.parametrize("task_name", M3_CORE_TASKS)
 def test_task_nominal_oracle_conservative_and_ood(task_name: str) -> None:
     from rebranch.tasks import make_task
 

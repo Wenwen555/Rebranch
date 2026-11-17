@@ -33,8 +33,8 @@ class EvalMetrics:
     zero_shot_success_rate: float
     sim_false_positive_rate: float | None
     safety_violation_rate: float
-    redundant_probe_rate: float
-    missed_probe_rate: float
+    redundant_probe_rate: float | None
+    missed_probe_rate: float | None
     dev_llm_calls: int
     dev_tokens: int
     runtime_llm_calls: float
@@ -106,7 +106,10 @@ def compute_branch_discrimination_accuracy(
     traces: Sequence[Trace],
     policy_sources: Sequence[str] | None = None,
 ) -> float:
-    """Compute cluster-purity accuracy between executed trace paths and `backend.latent_mode(theta)`.
+    """Compute path-cluster purity against offline `backend.latent_mode(theta)` labels.
+
+    This diagnostic measures path separation, not correctness of a physical
+    parameter estimate. Continuous feedback can succeed without separating paths.
 
     Traces that terminated prematurely with `trace.error is not None` do not earn
     branch discrimination credit on multi-mode tasks, preventing crashes from being
@@ -190,7 +193,12 @@ def compute_metrics(
         )
         probed_flags.append(trace_used_probe(t, policy_source=src))
 
-    if backend.requires_branching:
+    # Tasks whose feedback is not recognized by this API/AST heuristic opt out.
+    # Missing classification is unavailable, not evidence that every probe was missed.
+    if not getattr(backend, "probe_metrics_available", True):
+        redundant_probe_rate = None
+        missed_probe_rate = None
+    elif backend.requires_branching:
         redundant_probe_rate = 0.0
         missed_probe_rate = sum(1 for p in probed_flags if not p) / n
     else:
@@ -220,8 +228,8 @@ def compute_metrics(
         zero_shot_success_rate=float(zero_shot_sr),
         sim_false_positive_rate=sim_fp_rate,
         safety_violation_rate=float(safety_rate),
-        redundant_probe_rate=float(redundant_probe_rate),
-        missed_probe_rate=float(missed_probe_rate),
+        redundant_probe_rate=redundant_probe_rate,
+        missed_probe_rate=missed_probe_rate,
         dev_llm_calls=int(dev_llm_calls),
         dev_tokens=int(dev_tokens),
         runtime_llm_calls=float(rt_calls),

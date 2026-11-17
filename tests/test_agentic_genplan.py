@@ -30,7 +30,8 @@ TEST = '''def run(api):
 
 
 def _action(tool: str, **kwargs) -> str:
-    return json.dumps({"tool": tool, **kwargs})
+    """Encode the canonical tool request envelope used by the model interface."""
+    return json.dumps({"tool": tool, "arguments": kwargs})
 
 
 def test_agentic_tool_loop_has_schema_history_tests_and_freeze():
@@ -64,6 +65,15 @@ def test_agentic_tool_loop_has_schema_history_tests_and_freeze():
     assert "remaining_rollouts" in final_prompt and "remaining_llm_requests" in final_prompt
     assert result.dev_llm_calls == 8
     assert llm.stats["calls"] == 8
+    assert result.policy_source == POLICY
+    for request in llm.history:
+        prompt = json.loads(request["prompt"])
+        assert prompt["response_schema"]["required"] == ["tool", "arguments"]
+        assert prompt["response_example"] == {"tool": "inspect_task", "arguments": {}}
+        assert "source" in prompt["tools"]["write_policy"]["arguments"]
+    assert result.extra["tool_events"][5]["action"] == {
+        "tool": "write_policy", "arguments": {"source": POLICY},
+    }
 
 
 def test_rollout_exhaustion_still_allows_analysis_and_explicit_freeze():
@@ -218,3 +228,104 @@ def test_invalid_policy_syntax_is_feedback_and_synthesis_continues():
     second_prompt = llm.history[1]["prompt"]
     history = json.loads(second_prompt)["interaction_history"]
     assert "Syntax error" in history[0]["tool_result"]["error"]
+
+
+def test_old_inspections_are_compact_and_complete_runs_remain_analyzable():
+    """Long-trace history stays bounded while analysis and rereading retain every call."""
+    source = 'def run(api):\n    print("diagnostic output")\n    for _ in range(200):\n        api.get_ee_pose()\n'
+    llm = MockLLMClient([
+        _action("write_policy", source=source),
+        _action("run_experiment", case_indices=[0, 1, 2]),
+        _action("inspect_run", run_id=0),
+        _action("inspect_run", run_id=1),
+        _action("inspect_run", run_id=99),
+        _action("inspect_run", run_id=2),
+        _action("run_analysis", script='def analyze(data):\n    return [[len(run["sdk_calls"]), run["stdout"]] for run in data]'),
+        _action("inspect_run", run_id=0),
+        _action("freeze_policy"),
+    ])
+    result = run_agentic_genplan(ToyRetuneTask(), llm, max_rollouts=3,
+                                 max_llm_calls=9, n_dev_cases=3)
+    after_third_inspection = json.loads(llm.history[6]["prompt"])["interaction_history"]
+    inspected = [entry["tool_result"] for entry in after_third_inspection
+                 if entry["action"]["tool"] == "inspect_run"]
+    assert "sdk_calls" not in inspected[0]
+    assert inspected[0]["n_sdk_calls"] == 200
+    assert "run_analysis" in inspected[0]["details"]
+    assert inspected[2] == {"error": "unknown run_id"}
+    assert [run["run_id"] for run in inspected if "sdk_calls" in run] == [1, 2]
+    assert result.extra["analysis_scripts"][0]["result"] == [[200, "diagnostic output\n"]] * 3
+    final_history = json.loads(llm.history[-1]["prompt"])["interaction_history"]
+    full_inspections = [entry["tool_result"] for entry in final_history
+                        if entry["action"]["tool"] == "inspect_run"
+                        and "sdk_calls" in entry["tool_result"]]
+    assert [run["run_id"] for run in full_inspections] == [2, 0]
+    assert all(len(run["sdk_calls"]) == 200 for run in result.extra["development_runs"])
+
+
+def test_development_noise_seeds_match_case_indices_and_native_capabilities_are_declared():
+    """Repeated cases share the evaluator's seed routing and report library capabilities."""
+    backend = ToyRetuneTask()
+    seeds = []
+    make_episode = backend.make_episode
+
+    def record_episode_seed(theta, seed):
+        """Observe episode seeds while running the original toy backend."""
+        seeds.append(seed)
+        return make_episode(theta, seed=seed)
+
+    backend.make_episode = record_episode_seed
+    llm = MockLLMClient([
+        _action("write_policy", source=POLICY),
+        _action("run_experiment", case_indices=[2, 0, 2]),
+        _action("freeze_policy"),
+    ])
+    result = run_agentic_genplan(backend, llm, seed=7, max_rollouts=3,
+                                 max_llm_calls=3, n_dev_cases=3)
+    assert seeds == [9, 7, 9]
+    api_doc = json.loads(llm.history[0]["prompt"])["robot_api"]
+    assert "numpy" in api_doc and "scipy" in api_doc
+    assert "NO `import`" not in api_doc
+    adaptation = result.extra["platform_adaptation"]
+    assert {"numpy", "scipy"}.issubset(adaptation["agentic_policy_imports"])
+    assert adaptation["rebranch_policy_imports"] == []
+    assert adaptation["rebranch_injected_modules"] == ["math"]
+    assert adaptation["agentic_max_policy_lines"] == adaptation["rebranch_default_max_policy_lines"] == 50000
+
+
+def test_missing_tool_response_is_feedback_and_later_inspection_continues():
+    """Malformed responses are normalized before inspection history is compacted."""
+    llm = MockLLMClient([
+        _action("write_policy", source=POLICY),
+        _action("run_experiment", case_indices=[0]),
+        json.dumps({"run_id": 0}),
+        _action("inspect_run", run_id=0),
+        _action("freeze_policy"),
+    ])
+    result = run_agentic_genplan(ToyRetuneTask(), llm, max_rollouts=1,
+                                 max_llm_calls=5, n_dev_cases=1)
+    history = json.loads(llm.history[-1]["prompt"])["interaction_history"]
+    assert history[2]["action"] == {"tool": "invalid", "arguments": {}}
+    assert "response must be a JSON object with a string tool" in history[2]["tool_result"]["error"]
+    assert history[3]["tool_result"]["sdk_calls"][0]["name"] == "zero_ee_wrench"
+    assert result.extra["stop_reason"] == "explicit_freeze"
+
+
+@pytest.mark.parametrize("invalid_request", [
+    {"tool": "write_policy", "source": POLICY},
+    {"tool": "inspect_task", "arguments": []},
+])
+def test_missing_or_nonobject_arguments_get_protocol_feedback(invalid_request):
+    """Reject malformed envelopes, then accept the next canonical request unchanged."""
+    llm = MockLLMClient([
+        json.dumps(invalid_request),
+        _action("write_policy", source=POLICY),
+        _action("freeze_policy"),
+    ])
+    result = run_agentic_genplan(ToyRetuneTask(), llm, max_rollouts=0,
+                                 max_llm_calls=3, n_dev_cases=1)
+    history = result.extra["tool_events"]
+    assert "include an arguments JSON object" in history[0]["tool_result"]["error"]
+    assert history[1]["tool_result"]["accepted"] is True
+    assert result.policy_source == POLICY
+    assert result.extra["stop_reason"] == "explicit_freeze"

@@ -96,6 +96,15 @@ def _policy_source(layout: list[tuple[str, str, float, float, float]]) -> str:
         "        ry = 2*(x*y+z*w)*dx + (1-2*(x*x+z*z))*dy + 2*(y*z-x*w)*dz\n"
         "        rz = 2*(x*z-y*w)*dx + 2*(y*z+x*w)*dy + (1-2*(x*x+y*y))*dz\n"
         "        return [p[0]+rx, p[1]+ry, p[2]+rz]\n"
+        "    def _height(site, obj, stack):\n"
+        "        # Project the held cube onto the beam normal to avoid corner penetration.\n"
+        "        tip = _world(site, 0.0, 0.0, 1.0)\n"
+        "        normal = [tip[i]-site['pos'][i] for i in range(3)]\n"
+        "        extent = 0.0\n"
+        "        for axis in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):\n"
+        "            tip = _world(obj, axis[0], axis[1], axis[2])\n"
+        "            extent += abs(sum(normal[i]*(tip[i]-obj['pos'][i]) for i in range(3)))\n"
+        f"        return {BLOCK_HALF_SIZE:.6f}*extent + stack - 0.0003 + 0.0005\n"
         "    def _place(api, name, zone_name, dx, dy, stack):\n"
         "        obj = api.get_object_pose(name)['pos']\n"
         "        api.open_gripper(0.068)\n"
@@ -103,29 +112,37 @@ def _policy_source(layout: list[tuple[str, str, float, float, float]]) -> str:
         "        api.move_to(obj, speed=0.03)\n"
         "        api.close_gripper(force=10.0)\n"
         "        api.move_to([obj[0], obj[1], obj[2]+0.09], speed=0.04)\n"
-        "        held = api.get_object_pose(name)['pos']\n"
+        "        held_pose = api.get_object_pose(name)\n"
+        "        held = held_pose['pos']\n"
         "        tcp = api.get_ee_pose()['pos']\n"
         "        grasp_offset = [held[i]-tcp[i] for i in range(3)]\n"
         "        site = api.get_object_pose(zone_name)\n"
-        f"        target_z = {BLOCK_HALF_SIZE - 0.0003:.7f}+stack\n"
+        "        target_z = _height(site, held_pose, stack)\n"
         "        target = _world(site, dx, dy, target_z)\n"
         "        tcp_target = [target[i]-grasp_offset[i] for i in range(3)]\n"
         "        api.move_to([tcp_target[0], tcp_target[1], tcp_target[2]+0.07], speed=0.04)\n"
-        "        held = api.get_object_pose(name)['pos']\n"
+        "        held_pose = api.get_object_pose(name)\n"
+        "        held = held_pose['pos']\n"
         "        tcp = api.get_ee_pose()['pos']\n"
         "        grasp_offset = [held[i]-tcp[i] for i in range(3)]\n"
+        "        target_z = _height(site, held_pose, stack)\n"
+        "        target = _world(site, dx, dy, target_z)\n"
         "        tcp_target = [target[i]-grasp_offset[i] for i in range(3)]\n"
         "        api.move_to(tcp_target, quat=start['quat'], speed=0.02)\n"
         "        for _ in range(2):\n"
-        "            actual = api.get_object_pose(name)['pos']\n"
+        "            held_pose = api.get_object_pose(name)\n"
+        "            actual = held_pose['pos']\n"
         "            current_site = api.get_object_pose(zone_name)\n"
+        "            target_z = _height(current_site, held_pose, stack)\n"
         "            desired = _world(current_site, dx, dy, target_z)\n"
         "            tcp = api.get_ee_pose()['pos']\n"
         "            tcp_target = [tcp[i]+desired[i]-actual[i] for i in range(3)]\n"
         "            api.move_to(tcp_target, quat=start['quat'], speed=0.02)\n"
-        "        api.open_gripper(0.068)\n"
+        # Release with 3 mm clearance per side; a full opening hits the adjacent cube.
+        f"        api.open_gripper({2 * BLOCK_HALF_SIZE + 0.006:.6f})\n"
         "        tcp = api.get_ee_pose()['pos']\n"
         "        api.move_to([tcp[0], tcp[1], tcp[2]+0.07], quat=start['quat'], speed=0.04)\n"
+        "        api.open_gripper(0.068)\n"
         f"{rows}\n"
         "    beam = api.get_object_pose('beam')['pos']\n"
         "    api.move_to([beam[0], beam[1], 0.35], quat=start['quat'], speed=0.04)\n"
@@ -248,7 +265,10 @@ class HiddenMassBalanceBeamTask(TaskBackend):
 
     measurement_track = "B"
     name = "t10_hidden_mass_balance_beam_b"
-    requires_branching = False
+    # Evaluation marks missing interaction; physical success never inspects Python branches.
+    requires_branching = True
+    # API-call/if heuristics cannot classify continuous pose feedback as a probe.
+    probe_metrics_available = False
     task_description = _TASK_DESCRIPTION
 
     def __init__(self) -> None:
@@ -273,7 +293,11 @@ class HiddenMassBalanceBeamTask(TaskBackend):
             )
 
     def make_episode(self, theta: dict[str, Any], seed: int = 0):
+        """Build the task with friction-drift correction shared by every controller."""
         model = build_hidden_mass_balance_model(theta)
+        # NoSlip removes measured soft-contact creep during partial beam loading.
+        # This numerical setting is common to A/B and all methods, before reset.
+        model.opt.noslip_iterations = 2
         masses = masses_by_block(theta)
         witness = nonstack_feasibility_witness(theta)
         beam_top = SUPPORT_Z + PIVOT_HEIGHT + BEAM_CLEARANCE + BEAM_HALF_THICKNESS
@@ -339,6 +363,7 @@ class HiddenMassBalanceBeamTask(TaskBackend):
             model=model,
             evaluate_fn=evaluate,
         )
+        episode.protocol_version = "t10-v2-noslip2"
         if self.measurement_track == "A":
             from rebranch.baselines.physcap_appendix import with_physcap_mass_macro
 
@@ -370,10 +395,13 @@ class HiddenMassBalanceBeamTask(TaskBackend):
         return self.draft_policy
 
     def latent_mode(self, theta: dict[str, Any]) -> str:
-        return "continuous_unknown_mass"
+        """Label the heaviest block identity for offline path-cluster diagnostics."""
+        masses = masses_by_block(theta)
+        return "heaviest_" + max(masses, key=masses.get)
 
 
 class HiddenMassBalanceBeamATask(HiddenMassBalanceBeamTask):
+    probe_metrics_available = True
     measurement_track = "A"
     name = "t10_hidden_mass_balance_beam_a"
 

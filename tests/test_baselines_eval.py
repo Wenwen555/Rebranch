@@ -386,3 +386,37 @@ def test_runner_suite_budget_parity_and_ablations(tmp_path: Path) -> None:
     for a in ablations:
         assert a in abl_txt
 
+
+
+def test_t10_probe_metadata_and_heaviest_path_labels() -> None:
+    """A blind common path earns class-frequency purity; measuring mass is not redundant."""
+    from rebranch.exec.trace import CallRecord
+    from rebranch.tasks import make_task
+
+    task = make_task("t10_hidden_mass_balance_beam_a")
+    traces = []
+    for permutation in range(6):
+        theta = task.param_space.nominal()
+        theta["mass_permutation"] = permutation
+        traces.append(Trace(theta=theta, seed=0, lines=[1, 2]))
+    assert len({task.latent_mode(trace.theta) for trace in traces}) == 3
+    blind = compute_metrics(task, traces)
+    assert blind.branch_discrimination_accuracy == pytest.approx(1 / 3)
+    assert blind.missed_probe_rate == 1.0
+    for trace in traces:
+        trace.calls.append(CallRecord(0, "get_mass", 1, 1, ("block_a",), {}, 0.055, {}))
+    measured = compute_metrics(task, traces)
+    assert measured.redundant_probe_rate == 0.0
+    assert measured.missed_probe_rate == 0.0
+    # Executing a measurement alone does not establish mode discrimination.
+    assert measured.branch_discrimination_accuracy == pytest.approx(1 / 3)
+
+
+def test_continuous_pose_feedback_probe_metrics_are_unavailable() -> None:
+    """An unrecognized continuous probe must not become a 100% missed-probe claim."""
+    from rebranch.tasks import make_task
+
+    task = make_task("t10_hidden_mass_balance_beam_b")
+    metrics = compute_metrics(task, [Trace(theta=task.param_space.nominal(), seed=0)])
+    assert metrics.redundant_probe_rate is None
+    assert metrics.missed_probe_rate is None

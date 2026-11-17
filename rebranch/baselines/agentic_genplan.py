@@ -31,7 +31,15 @@ _UNAVAILABLE_MODULES = {"os", "sys", "subprocess", "socket", "pathlib", "shutil"
                         "builtins", "io", "inspect", "gc"}
 
 
-AGENTIC_SYSTEM = """You are an autonomous experimenter. Use the available tools to inspect the task, write and run diagnostic RobotAPI policies, inspect complete SDK feedback, write analysis scripts, revise policies, and explicitly freeze one final policy. Choose development cases and experiments yourself. Do not infer or request hidden parameters. A run's outcome and SDK trace are observations; its parameter vector is withheld. Every experiment costs one rollout and every tool decision costs one LLM request. Return exactly one JSON object with a tool name and arguments."""
+# Match the actual Agentic executor's numerical imports in every tool prompt.
+AGENTIC_API_DOC = API_DOC.replace(
+    "- NO `import` statements are allowed (`math` is already pre-injected).",
+    "- Numerical imports are allowed: " + ", ".join(sorted(_AGENTIC_MODULES))
+    + ". math and statistics are also pre-injected.",
+)
+
+
+AGENTIC_SYSTEM = """You are an autonomous experimenter. Use the available tools to inspect the task, write and run diagnostic RobotAPI policies, inspect complete SDK feedback, write analysis scripts, revise policies, and explicitly freeze one final policy. Choose development cases and experiments yourself. Infer physical properties from public observations and experiments; privileged parameter values are unavailable. A run's outcome and SDK trace are observations; its parameter vector is withheld. Every experiment costs one rollout and every tool decision costs one LLM request. Return exactly one JSON object with keys "tool" and "arguments". Put all tool parameters inside the "arguments" object, using {} for parameterless tools. Example: {"tool": "inspect_task", "arguments": {}}."""
 
 
 def _public_json_value(value: Any) -> Any:
@@ -199,6 +207,23 @@ def _trace_public(trace: Trace) -> dict[str, Any]:
     }
 
 
+def _compact_inspect_history(transcript: list[dict[str, Any]]) -> None:
+    """Keep two complete inspections in prompts; leave stored runs available for analysis."""
+    inspections = [entry for entry in transcript
+                   if entry["action"]["tool"] == "inspect_run"
+                   and "sdk_calls" in entry["tool_result"]]
+    for entry in inspections[:-2]:
+        run = entry["tool_result"]
+        # Replace the transcript reference, without modifying the original run.
+        entry["tool_result"] = {
+            key: run[key] for key in (
+                "run_id", "case_index", "success", "score", "failure",
+                "execution_error", "sim_time",
+            )
+        } | {"n_sdk_calls": len(run["sdk_calls"]),
+             "details": "Older inspection summarized. Use inspect_run to reread it or run_analysis to aggregate complete stored runs, including SDK calls and stdout/stderr."}
+
+
 class AgenticGenPlanAgent:
     """Frozen RobotAPI policy; all language-model/tool use is development-only."""
     def __init__(self, source: str, *, max_calls: int = 200):
@@ -219,7 +244,7 @@ def run_agentic_genplan(
     *, seed: int = 0, max_rollouts: int = 2000, max_llm_calls: int = 8,
     n_dev_cases: int = 24, max_policy_calls: int = 200,
 ) -> BaselineResult:
-    """Autonomous inspect/experiment/analyze/revise/freeze loop on sampled dev cases."""
+    """Run autonomous development using JSON tool requests with nested arguments."""
     t0 = time.perf_counter()
     rng = np.random.default_rng(seed)
     dev_cases = [backend.param_space.sample(rng) for _ in range(max(1, n_dev_cases))]
@@ -262,17 +287,15 @@ def run_agentic_genplan(
                        "completion_tokens": response.completion_tokens})
         return response
 
-    def tool_result(action: dict[str, Any]) -> dict[str, Any]:
+    def tool_result(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch the tool and argument object unpacked at the JSON response boundary."""
         nonlocal policy_source, test_source, rollouts, frozen, stop_reason, last_error
-        tool = action.get("tool")
-        if not isinstance(tool, str):
-            return {"error": "tool must be a string"}
         if tool == "inspect_task":
-            return {"task_description": backend.task_description, "robot_api": API_DOC,
+            return {"task_description": backend.task_description, "robot_api": AGENTIC_API_DOC,
                     "available_tools": ["write_policy", "write_test", "run_experiment", "run_test",
                         "inspect_run", "run_analysis", "freeze_policy"]}
         if tool in {"write_policy", "write_test"}:
-            source = action.get("source")
+            source = arguments.get("source")
             if not isinstance(source, str):
                 return {"accepted": False, "error": "source must be a Python string"}
             try:
@@ -288,7 +311,7 @@ def run_agentic_genplan(
                 snapshots.append({"version": len(snapshots), "kind": "test", "source": source})
             return {"accepted": True, "kind": tool, "sha256": __import__("hashlib").sha256(source.encode()).hexdigest()}
         if tool in {"run_experiment", "run_test"}:
-            source_kind = action.get("source_kind", "test" if tool == "run_test" else "policy")
+            source_kind = arguments.get("source_kind", "test" if tool == "run_test" else "policy")
             if not isinstance(source_kind, str) or source_kind not in {"policy", "test"}:
                 return {"error": "source_kind must be 'policy' or 'test'"}
             selected_source = test_source if source_kind == "test" else policy_source
@@ -297,7 +320,7 @@ def run_agentic_genplan(
             if rollouts >= max_rollouts:
                 stop_reason = "rollout_budget_exhausted"
                 return {"error": stop_reason}
-            indices = action.get("case_indices")
+            indices = arguments.get("case_indices")
             if not isinstance(indices, list) or any(type(idx) is not int for idx in indices):
                 return {"error": "case_indices must be a list of integer development indices"}
             invalid = [idx for idx in indices if idx < 0 or idx >= len(dev_cases)]
@@ -308,8 +331,8 @@ def run_agentic_genplan(
             for idx in indices:
                 if rollouts >= max_rollouts:
                     break
-                ep = backend.make_episode(dev_cases[idx], seed=seed + 1000 + idx)
-                tr = _run_agentic_policy(selected_source, ep, dev_cases[idx], seed=seed + 1000 + idx,
+                ep = backend.make_episode(dev_cases[idx], seed=seed + idx)
+                tr = _run_agentic_policy(selected_source, ep, dev_cases[idx], seed=seed + idx,
                                          max_calls=max_policy_calls)
                 rollouts += 1
                 record = {"run_id": len(runs), "case_index": idx, **_trace_public(tr)}
@@ -321,20 +344,20 @@ def run_agentic_genplan(
             return {"run_ids": result_ids, "results": summaries, "source_kind": source_kind,
                     "remaining_rollouts": max_rollouts - rollouts}
         if tool == "inspect_run":
-            idx = action.get("run_id")
+            idx = arguments.get("run_id")
             if type(idx) is not int:
                 return {"error": "run_id must be an integer returned by an experiment"}
             return runs[idx] if 0 <= idx < len(runs) else {"error": "unknown run_id"}
         if tool == "run_analysis":
             try:
-                script = action.get("script")
+                script = arguments.get("script")
                 if not isinstance(script, str):
                     return {"error": "script must be Python source as a string"}
                 output = _safe_analysis(script, copy.deepcopy(runs))
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 return {"error": last_error}
-            analyses.append({"script": action.get("script", ""), "result": output})
+            analyses.append({"script": script, "result": output})
             return {"result": output}
         if tool == "freeze_policy":
             if policy_source is None:
@@ -346,16 +369,22 @@ def run_agentic_genplan(
 
     transcript: list[dict[str, Any]] = []
     schemas = {
-        "inspect_task": {"args": {}, "returns": "task description, RobotAPI specification, no draft implementation, and tool capabilities"},
-        "write_policy": {"args": {"source": "Python source defining run(api); math/numpy/scipy imports allowed"}, "returns": "accepted/error and source sha256"},
-        "write_test": {"args": {"source": "Python diagnostic/test policy defining run(api)"}, "returns": "accepted/error and source sha256"},
-        "run_experiment": {"args": {"source_kind": "policy|test (default policy)", "case_indices": "required list of integers in [0, n_dev_cases)"}, "returns": "run_ids, per-case success/score/failure/execution_error summaries, and remaining_rollouts"},
-        "run_test": {"args": {"case_indices": "required list of integers in [0, n_dev_cases); runs write_test source"}, "returns": "run_ids, per-case success/score/failure/execution_error summaries, and remaining_rollouts"},
-        "inspect_run": {"args": {"run_id": "integer returned by run_experiment/run_test"}, "returns": "full SDK trace, task result, stdout/stderr, no hidden theta"},
-        "run_analysis": {"args": {"script": "Python source defining analyze(data); can import math/statistics/numpy/scipy"}, "returns": "analysis result or error"},
-        "freeze_policy": {"args": {}, "returns": "frozen=true and source sha256"},
+        "inspect_task": {"arguments": {}, "returns": "task description, RobotAPI specification, no draft implementation, and tool capabilities"},
+        "write_policy": {"arguments": {"source": "Python source defining run(api); math/numpy/scipy imports allowed"}, "returns": "accepted/error and source sha256"},
+        "write_test": {"arguments": {"source": "Python diagnostic/test policy defining run(api)"}, "returns": "accepted/error and source sha256"},
+        "run_experiment": {"arguments": {"source_kind": "policy|test (default policy)", "case_indices": "required list of integers in [0, n_dev_cases)"}, "returns": "run_ids, per-case success/score/failure/execution_error summaries, and remaining_rollouts"},
+        "run_test": {"arguments": {"case_indices": "required list of integers in [0, n_dev_cases); runs write_test source"}, "returns": "run_ids, per-case success/score/failure/execution_error summaries, and remaining_rollouts"},
+        "inspect_run": {"arguments": {"run_id": "integer returned by run_experiment/run_test"}, "returns": "full SDK trace, task result, stdout/stderr, no hidden theta; only the two latest full inspections remain in prompt history"},
+        "run_analysis": {"arguments": {"script": "Python source defining analyze(data); can import math/statistics/numpy/scipy"}, "returns": "analysis result or error"},
+        "freeze_policy": {"arguments": {}, "returns": "frozen=true and source sha256"},
     }
-    prompt = json.dumps({"task": backend.task_description, "robot_api": API_DOC,
+    response_schema = {
+        "type": "object", "required": ["tool", "arguments"],
+        "properties": {"tool": {"enum": list(schemas)}, "arguments": {"type": "object"}},
+    }
+    prompt = json.dumps({"task": backend.task_description, "robot_api": AGENTIC_API_DOC,
+        "response_schema": response_schema,
+        "response_example": {"tool": "inspect_task", "arguments": {}},
         "instruction": "Autonomously inspect, write and run diagnostics, select development cases, revise, then explicitly freeze a generalized policy.",
         "tools": schemas, "n_dev_cases": len(dev_cases), "legal_case_indices": [0, len(dev_cases)-1],
         "remaining_rollouts": max_rollouts-rollouts, "remaining_llm_requests": max_llm_calls-calls,
@@ -371,22 +400,28 @@ def run_agentic_genplan(
             break
         try:
             action = json.loads(response.text)
-            if not isinstance(action, dict) or "tool" not in action:
-                raise ValueError("response must be a JSON object with tool")
+            if not isinstance(action, dict) or not isinstance(action.get("tool"), str):
+                raise ValueError("response must be a JSON object with a string tool")
+            if not isinstance(action.get("arguments"), dict):
+                raise ValueError("response must include an arguments JSON object; use {} for parameterless tools")
         except Exception as exc:
             last_error = f"invalid tool response: {exc}"
             tool_out = {"error": last_error}
-            action = {"tool": "invalid"}
+            action = {"tool": "invalid", "arguments": {}}
         else:
-            tool_out = tool_result(action)
+            tool_out = tool_result(action["tool"], action["arguments"])
         transcript.append({"action": action, "tool_result": tool_out})
-        prompt = json.dumps({"task": backend.task_description, "robot_api": API_DOC, "tools": schemas,
+        if action["tool"] == "inspect_run":
+            _compact_inspect_history(transcript)
+        prompt = json.dumps({"task": backend.task_description, "robot_api": AGENTIC_API_DOC, "tools": schemas,
+            "response_schema": response_schema,
+            "response_example": {"tool": "inspect_task", "arguments": {}},
             "n_dev_cases": len(dev_cases), "legal_case_indices": [0, len(dev_cases)-1],
             "remaining_rollouts": max_rollouts-rollouts,
             "remaining_llm_requests": max_llm_calls-calls,
             "interaction_history": transcript,
             "current_policy_source": policy_source, "current_test_source": test_source,
-            "next": "Continue diagnosis/revision using the full history, or explicitly freeze_policy."},
+            "next": "Continue diagnosis/revision using the history and run_analysis for complete stored runs, or explicitly freeze_policy."},
             ensure_ascii=False, indent=2)
     if not frozen and rollouts >= max_rollouts and stop_reason != "external_llm_budget_exhausted":
         stop_reason = "rollout_budget_exhausted"
@@ -405,6 +440,18 @@ def run_agentic_genplan(
         round_logs=events + [{"tool_transcript": transcript}],
         program_snapshots=snapshots, wall_time_s=time.perf_counter()-t0,
         extra={"identity": "platform_adaptation", "frozen": frozen,
+               "platform_adaptation": {
+                   "agentic_policy_imports": sorted(_AGENTIC_MODULES),
+                   "rebranch_policy_imports": [],
+                   "rebranch_injected_modules": ["math"],
+                   "agentic_max_policy_lines": 50000,
+                   "rebranch_default_max_policy_lines": 50000,
+                   "max_policy_calls": max_policy_calls,
+                   "development_noise_seed": "seed + case_index (fixed across repeats)",
+                   "tool_request_format": {"tool": "string", "arguments": "object"},
+                   "inspection_history": "latest two full inspections; older results summarized; run_analysis retains all data",
+                   "comparison_scope": "Native numerical-library capabilities: AgenticGenPlan uses allowed stdlib/NumPy/SciPy; ReBranch uses SAFE_BUILTINS and injected math.",
+               },
                "freeze_kind": "explicit_agent_freeze" if stop_reason == "explicit_freeze" else "budget_stop",
                "stop_reason": stop_reason, "last_error": last_error,
                "n_development_cases": len(dev_cases), "n_experiments": rollouts,

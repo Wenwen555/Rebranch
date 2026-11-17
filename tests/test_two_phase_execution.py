@@ -111,3 +111,51 @@ def test_run_policy_limits_remain_failures_after_successful_evaluation():
         assert "max_" in trace.error
         assert trace.sim_time == ep.sim_time
         assert trace.safety_violation == "fake-marker"
+
+
+def test_t10_pilot_saves_nominal_and_complete_split_traces_without_extra_rollouts(tmp_path):
+    """The saved traces cover exactly the original nominal and split episode budgets."""
+    import json
+    import pytest
+
+    from rebranch.baselines import BaselineResult
+    from scripts.run_t10_baseline_pilot import _evaluate_static_split
+
+    backend, episodes = _counted_backend()
+    result = BaselineResult(
+        method="t10_fixed_blind", policy_source=_policy(3), n_rollouts=24,
+        dev_llm_calls=0, dev_prompt_tokens=0, dev_completion_tokens=0,
+    )
+    cases = [backend.param_space.nominal(), backend.param_space.nominal()]
+    for split, seed in (("hidden", 7), ("boundary", 507)):
+        trace_path = tmp_path / f"{split}.jsonl"
+        metrics = _evaluate_static_split(
+            backend, result, cases, seed=seed, workers=1, trace_path=trace_path,
+        )
+        records = [json.loads(line) for line in trace_path.read_text().splitlines()]
+        assert [record["kind"] for record in records] == ["nominal", "test", "test"]
+        assert [record["trace"]["seed"] for record in records] == [seed, seed * 1000, seed * 1000 + 1]
+        assert [record["case_index"] for record in records[1:]] == [0, 1]
+        for record in records:
+            trace = record["trace"]
+            assert trace["theta"] == cases[0]
+            assert trace["protocol_version"] == "two-phase-toy-test"
+            assert trace["error"] is None
+            assert trace["sim_time"] >= 0.125
+            assert trace["wall_time"] > 0
+            assert trace["lines"]
+            assert len(trace["calls"]) == 3
+            assert [call["index"] for call in trace["calls"]] == [0, 1, 2]
+            assert all(call["name"] == "get_ee_pose" and call["result"] and call["obs"]
+                       for call in trace["calls"])
+        final_traces = [record["trace"] for record in records[1:]]
+        assert metrics.n_episodes == 2
+        assert metrics.n_rollouts_dev == 24
+        assert metrics.zero_shot_success_rate == sum(trace["success"] for trace in final_traces) / 2
+        assert metrics.mean_score == pytest.approx(sum(trace["score"] for trace in final_traces) / 2)
+        assert metrics.mean_exec_time_s == pytest.approx(
+            sum(trace["sim_time"] + trace["wall_time"] for trace in final_traces) / 2
+        )
+        assert metrics.runtime_llm_calls == 0
+    assert len(episodes) == 6
+    assert all(episode.test_eval_count[0] == 1 for episode in episodes)

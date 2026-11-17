@@ -76,12 +76,11 @@ def mass_balance_source() -> str:
 def tilt_feedback_source() -> str:
     """Estimate each mass with a beam-angle probe, then correct the last placement."""
     measurement = (
-        "    rest = _withdraw(api, tcp_quat)\n"
-        "    api.move_compliant(rest, quat=tcp_quat, duration=0.8)\n"
+        "    pivot_quat = api.get_object_pose('balance_support')['quat']\n"
         "    masses = {}\n"
         "    for name in names:\n"
-        "        start_pos = api.get_object_pose(name)['pos']\n"
-        "        masses[name] = _probe_mass(api, name, tcp_quat, start_pos)\n"
+        "        start_pose = api.get_object_pose(name)\n"
+        "        masses[name] = _probe_mass(api, name, tcp_quat, start_pose, pivot_quat)\n"
     )
     return _mass_balance_program(measurement, tilt_feedback=True)
 
@@ -143,10 +142,10 @@ def _mass_balance_program(measurement: str, *, tilt_feedback: bool) -> str:
         source += (
             "    rest = _withdraw(api, tcp_quat)\n"
             "    api.move_compliant(rest, quat=tcp_quat, duration=0.8)\n"
-            "    angle = _beam_angle(api)\n"
+            "    beam = api.get_object_pose('beam')\n"
+            "    angle = _beam_angle(pivot_quat, beam['quat'])\n"
             "    name = order[2]\n"
             "    friction = " + repr(HINGE_FRICTIONLOSS_NM) + " if angle > 0 else -" + repr(HINGE_FRICTIONLOSS_NM) + " if angle < 0 else 0.0\n"
-            "    beam = api.get_object_pose('beam')\n"
             "    height_moment = sum(masses[n] * _local_position(beam, api.get_object_pose(n)['pos'])[2] for n in order[:2])\n"
             "    current_moment = (" + repr(HINGE_STIFFNESS_NM_RAD) + " * angle + friction) / (" + repr(_GRAVITY_M_S2) + " * math.cos(angle)) - height_moment * math.tan(angle)\n"
             "    x = -current_moment / masses[name]\n"
@@ -171,6 +170,7 @@ def _mass_balance_program(measurement: str, *, tilt_feedback: bool) -> str:
 
 
 def _policy_helpers() -> str:
+    """Emit public-pose transfer helpers; each transfer ends with an open gripper."""
     return f'''\
 def _rotate(q, v):
     w, x, y, z = q
@@ -186,45 +186,72 @@ def _world(site, dx, dy, dz):
     p = site['pos']
     return [p[0]+d[0], p[1]+d[1], p[2]+d[2]]
 
-def _place_at(api, name, site_name, dx, dy, target_z, tcp_quat):
-    obj = api.get_object_pose(name)['pos']
-    api.open_gripper(0.068)
+def _height(site, obj, surface_z):
+    # Cube extent along the support normal plus a 0.5 mm release clearance.
+    normal = _rotate(site['quat'], [0, 0, 1])
+    extent = 0.0
+    for axis in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+        direction = _rotate(obj['quat'], axis)
+        extent += abs(sum(normal[i]*direction[i] for i in range(3)))
+    return {BLOCK_HALF_SIZE:.6f} * extent + surface_z + 0.0005
+
+def _place_at(api, name, site_name, dx, dy, surface_z, tcp_quat, obj_pose):
+    # Callers supply a current public pose and an already open gripper.
+    obj = obj_pose['pos']
     api.move_to([obj[0], obj[1], obj[2]+0.08], quat=tcp_quat, speed=0.05)
     api.move_to(obj, quat=tcp_quat, speed=0.03)
     api.close_gripper(force=10.0)
     api.move_to([obj[0], obj[1], obj[2]+0.09], quat=tcp_quat, speed=0.04)
-    held = api.get_object_pose(name)['pos']
+    held_pose = api.get_object_pose(name)
+    held = held_pose['pos']
     tcp = api.get_ee_pose()['pos']
     grasp_offset = [held[i]-tcp[i] for i in range(3)]
     site = api.get_object_pose(site_name)
-    target = _world(site, dx, dy, target_z)
+    target = _world(site, dx, dy, _height(site, held_pose, surface_z))
     tcp_target = [target[i]-grasp_offset[i] for i in range(3)]
     api.move_to([tcp_target[0], tcp_target[1], tcp_target[2]+0.07], quat=tcp_quat, speed=0.04)
-    held = api.get_object_pose(name)['pos']
+    held_pose = api.get_object_pose(name)
+    held = held_pose['pos']
     tcp = api.get_ee_pose()['pos']
     grasp_offset = [held[i]-tcp[i] for i in range(3)]
+    target = _world(site, dx, dy, _height(site, held_pose, surface_z))
     tcp_target = [target[i]-grasp_offset[i] for i in range(3)]
     api.move_to(tcp_target, quat=tcp_quat, speed=0.02)
     for _ in range(2):
-        actual = api.get_object_pose(name)['pos']
+        held_pose = api.get_object_pose(name)
+        actual = held_pose['pos']
         current_site = api.get_object_pose(site_name)
-        desired = _world(current_site, dx, dy, target_z)
+        desired = _world(current_site, dx, dy, _height(current_site, held_pose, surface_z))
         tcp = api.get_ee_pose()['pos']
         tcp_target = [tcp[i]+desired[i]-actual[i] for i in range(3)]
         api.move_to(tcp_target, quat=tcp_quat, speed=0.02)
+    # Clear the cube before sweeping the pads past the same-side neighbour.
+    api.open_gripper({2 * BLOCK_HALF_SIZE + 0.006:.6f})
+    tcp = api.get_ee_pose()['pos']
+    api.move_to([tcp[0], tcp[1], tcp[2]+0.07], quat=tcp_quat, speed=0.04)
     api.open_gripper(0.068)
-    api.move_to([tcp_target[0], tcp_target[1], tcp_target[2]+0.07], quat=tcp_quat, speed=0.04)
 
 def _place(api, name, zone_name, dx, dy, tcp_quat):
-    _place_at(api, name, zone_name, dx, dy, {BLOCK_HALF_SIZE - _SITE_Z_OFFSET_M:.7f}, tcp_quat)
+    obj_pose = api.get_object_pose(name)
+    _place_at(api, name, zone_name, dx, dy, {-_SITE_Z_OFFSET_M:.7f}, tcp_quat, obj_pose)
 
-def _place_world(api, name, target, tcp_quat):
-    obj = api.get_object_pose(name)['pos']
-    api.open_gripper(0.068)
-    api.move_to([obj[0], obj[1], obj[2]+0.08], quat=tcp_quat, speed=0.05)
-    api.move_to(obj, quat=tcp_quat, speed=0.03)
+def _place_world(api, name, target, tcp_quat, obj_pose, beam):
+    # Regrasp the upper cube side while keeping the open pads above the beam.
+    obj = obj_pose['pos']
+    normal = _rotate(beam['quat'], [0, 0, 1])
+    pad_extent = sum(size * abs(sum(normal[i]*direction[i] for i in range(3)))
+                     for size, direction in ((0.009, _rotate(tcp_quat, [1, 0, 0])),
+                                             (0.038, _rotate(tcp_quat, [0, 1, 0])),
+                                             (0.014, _rotate(tcp_quat, [0, 0, 1]))))
+    # 38 mm is the 34 mm open half-gap + 2 mm pad offset + 2 mm pad half-thickness.
+    cube_extent = _height(beam, obj_pose, 0.0) - 0.0005
+    center_height = sum(normal[i]*(obj[i]-beam['pos'][i]) for i in range(3)) - {BEAM_HALF_THICKNESS:.6f}
+    rise = max(cube_extent / 2, pad_extent - center_height + 0.0005)
+    grasp = [obj[i] + rise * normal[i] for i in range(3)]
+    api.move_to([grasp[0], grasp[1], grasp[2]+0.08], quat=tcp_quat, speed=0.05)
+    api.move_to(grasp, quat=tcp_quat, speed=0.03)
     api.close_gripper(force=10.0)
-    api.move_to([obj[0], obj[1], obj[2]+0.09], quat=tcp_quat, speed=0.04)
+    api.move_to([grasp[0], grasp[1], grasp[2]+0.09], quat=tcp_quat, speed=0.04)
     held = api.get_object_pose(name)['pos']
     tcp = api.get_ee_pose()['pos']
     grasp_offset = [held[i]-tcp[i] for i in range(3)]
@@ -236,32 +263,33 @@ def _place_world(api, name, target, tcp_quat):
 
 def _withdraw(api, tcp_quat):
     beam = api.get_object_pose('beam')['pos']
-    api.move_to([beam[0], beam[1], beam[2]+0.12], quat=tcp_quat, speed=0.04)
+    # Transfers already raised the TCP 7 cm above contact before this retreat.
     rest = [beam[0], beam[1], 0.35]
     api.move_to(rest, quat=tcp_quat, speed=0.04)
     return rest
 '''
 
 def _probe_helpers() -> str:
-    return f'''\\
-def _probe_mass(api, name, tcp_quat, start_pos):
-    _place_at(api, name, 'beam', {_PROBE_ARM_M:.6f}, 0.0, {BEAM_HALF_THICKNESS + BLOCK_HALF_SIZE:.6f}, tcp_quat)
+    """Emit one physical probe per block and reuse its measured pose for retrieval."""
+    return f'''\
+def _probe_mass(api, name, tcp_quat, start_pose, pivot_quat):
+    _place_at(api, name, 'beam', {_PROBE_ARM_M:.6f}, 0.0, {BEAM_HALF_THICKNESS:.6f}, tcp_quat, start_pose)
     rest = _withdraw(api, tcp_quat)
     api.move_compliant(rest, quat=tcp_quat, duration=0.8)
-    after = _beam_angle(api)
-    obj = api.get_object_pose(name)['pos']
     beam = api.get_object_pose('beam')
-    local = _local_position(beam, obj)
+    after = _beam_angle(pivot_quat, beam['quat'])
+    obj_pose = api.get_object_pose(name)
+    local = _local_position(beam, obj_pose['pos'])
     friction = {HINGE_FRICTIONLOSS_NM:.6f} if after > 0 else -{HINGE_FRICTIONLOSS_NM:.6f} if after < 0 else 0.0
     mass = ({HINGE_STIFFNESS_NM_RAD:.6f} * after + friction) / ({_GRAVITY_M_S2:.4f} * (local[0]*math.cos(after) + local[2]*math.sin(after)))
-    _place_world(api, name, start_pos, tcp_quat)
-    rest = _withdraw(api, tcp_quat)
-    api.move_compliant(rest, quat=tcp_quat, duration=0.8)
+    _place_world(api, name, start_pose['pos'], tcp_quat, obj_pose, beam)
+    # The empty beam settles during the next approach/grasp/transfer.
     return mass
 '''
 
 
 def _tilt_helpers() -> str:
+    """Emit geometry-only functions using caller-provided public observations."""
     return f'''\
 def _qmul(a, b):
     aw, ax, ay, az = a
@@ -271,9 +299,8 @@ def _qmul(a, b):
             aw*by-ax*bz+ay*bw+az*bx,
             aw*bz+ax*by-ay*bx+az*bw]
 
-def _beam_angle(api):
-    pivot = api.get_object_pose('balance_support')['quat']
-    beam = api.get_object_pose('beam')['quat']
+def _beam_angle(pivot, beam):
+    # The fixed support quaternion is shared by all probes in this episode.
     relative = _qmul([pivot[0], -pivot[1], -pivot[2], -pivot[3]], beam)
     w, x, y, z = relative
     return math.atan2(2*(x*z+w*y), 1-2*(x*x+y*y))
