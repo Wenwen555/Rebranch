@@ -226,7 +226,7 @@ def run_policy(
     skip_actions: int = 0,
     skipped_action_results: Sequence[Any] = (),
 ) -> Trace:
-    """Execute one policy phase; set ``evaluate=False`` when another phase follows."""
+    """Execute one phase and carry terminal feedback only when ``evaluate=True``."""
     check_policy_source(source, extra_primitives=extra_primitives)
     code = compile(source, "<policy>", "exec")
     # A task episode owns task-specific permissions so every execution path
@@ -334,4 +334,5 @@ def run_policy(
         wall_time=wall_time,
         stdout=stdout_buffer.getvalue() if stdout_buffer is not None else "",
         stderr=stderr_buffer.getvalue() if stderr_buffer is not None else "",
+        public_feedback=eval_res.public_feedback if evaluate else {},
     )

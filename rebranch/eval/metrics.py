@@ -1,8 +1,9 @@
-"""Section 9 evaluation metrics and SDK-only trace summary helpers."""
+"""Section 9 metrics and public execution/terminal scoring summaries."""
 
 from __future__ import annotations
 
 import ast
+import json
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from typing import Any, Sequence
@@ -282,8 +283,13 @@ def format_sdk_calls(trace: Trace, max_calls: int = 8) -> str:
     return "\n".join(lines)
 
 
+def format_public_feedback(trace: Trace) -> str:
+    """Format task-authorized terminal scoring feedback separately from SDK sensing."""
+    return "Public terminal evaluation feedback: " + json.dumps(trace.public_feedback, sort_keys=True)
+
+
 def summarize_trace_for_llm(trace: Trace, max_calls: int = 8) -> str:
-    """Format a Trace into a concise SDK-only summary (never includes theta)."""
+    """Format SDK evidence and public terminal feedback without including theta."""
     status = "SUCCESS" if trace.success else "FAILED"
     lines = [
         f"Outcome: {status}, score={trace.score:.3f}, sim_time={trace.sim_time:.2f}s",
@@ -292,6 +298,8 @@ def summarize_trace_for_llm(trace: Trace, max_calls: int = 8) -> str:
     ]
     if trace.safety_violation:
         lines.append(f"Safety violation: {trace.safety_violation}")
+    if trace.public_feedback:
+        lines.append(format_public_feedback(trace))
     if trace.calls:
         lines.append(format_sdk_calls(trace, max_calls=max_calls))
     else:

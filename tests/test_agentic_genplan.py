@@ -69,7 +69,10 @@ def test_agentic_tool_loop_has_schema_history_tests_and_freeze():
     for request in llm.history:
         prompt = json.loads(request["prompt"])
         assert prompt["response_schema"]["required"] == ["tool", "arguments"]
-        assert prompt["response_example"] == {"tool": "inspect_task", "arguments": {}}
+        assert prompt["response_example"]["tool"] == "write_policy"
+        assert "source" in prompt["response_example"]["arguments"]
+        assert prompt["case_index_range"] == {"min_inclusive": 0, "max_inclusive": 3}
+        assert "legal_case_indices" not in prompt
         assert "source" in prompt["tools"]["write_policy"]["arguments"]
     assert result.extra["tool_events"][5]["action"] == {
         "tool": "write_policy", "arguments": {"source": POLICY},
@@ -329,3 +332,59 @@ def test_missing_or_nonobject_arguments_get_protocol_feedback(invalid_request):
     assert history[1]["tool_result"]["accepted"] is True
     assert result.policy_source == POLICY
     assert result.extra["stop_reason"] == "explicit_freeze"
+
+
+def test_public_feedback_and_task_api_doc_reach_all_agentic_tools():
+    """One evaluated result survives immediate, inspection, compact and analysis paths."""
+    from rebranch.tasks import make_task
+
+    feedback = {"protocol_version": "toy-terminal-v1", "hold_max_tilt_deg": 0.25,
+                "all_footprints_in_2d_regions": False}
+    backend = ToyRetuneTask()
+    backend.extra_api_doc = make_task("t10_hidden_mass_balance_beam_a").extra_api_doc
+    original_make = backend.make_episode
+    evaluations = []
+
+    def make_episode(theta, seed=0):
+        """Attach public scoring feedback to the existing analytical toy evaluator."""
+        episode = original_make(theta, seed=seed)
+        original_evaluate = episode.evaluate
+
+        def evaluate():
+            """Record the single scoring call and return its public extension."""
+            result = original_evaluate()
+            result.public_feedback = feedback
+            evaluations.append(seed)
+            return result
+
+        episode.evaluate = evaluate
+        return episode
+
+    backend.make_episode = make_episode
+    llm = MockLLMClient([
+        _action("inspect_task"),
+        _action("write_policy", source=TEST),
+        _action("run_experiment", case_indices=[0, 1, 2]),
+        _action("inspect_run", run_id=0),
+        _action("inspect_run", run_id=1),
+        _action("inspect_run", run_id=2),
+        _action("run_analysis", script='def analyze(data):\n    return [run["public_feedback"] for run in data]'),
+        _action("freeze_policy"),
+    ])
+    result = run_agentic_genplan(backend, llm, seed=7, max_rollouts=3,
+                                 max_llm_calls=8, n_dev_cases=3)
+    assert evaluations == [7, 8, 9]
+    events = result.extra["tool_events"]
+    assert events[0]["tool_result"]["robot_api"].endswith(backend.extra_api_doc)
+    assert "api.get_mass(name: str)" in backend.extra_api_doc
+    assert [row["public_feedback"] for row in events[2]["tool_result"]["results"]] == [feedback] * 3
+    assert "sdk_calls" not in events[3]["tool_result"]  # oldest full inspection compacted
+    assert all(events[i]["tool_result"]["public_feedback"] == feedback for i in (3, 4, 5))
+    assert result.extra["analysis_scripts"][0]["result"] == [feedback] * 3
+    assert all(row["public_feedback"] == feedback and "theta" not in row
+               for row in result.extra["development_runs"])
+    for request in llm.history:
+        prompt = json.loads(request["prompt"])
+        assert prompt["robot_api"].endswith(backend.extra_api_doc)
+        assert prompt["case_index_range"] == {"min_inclusive": 0, "max_inclusive": 2}
+    assert result.dev_llm_calls == 8 and result.n_rollouts == 3

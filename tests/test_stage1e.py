@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from rebranch.core.branch import format_trace_feedback
-from rebranch.eval.metrics import format_sdk_calls, summarize_trace_for_llm
+from rebranch.core.branch import format_conflict_summary, format_trace_feedback
+from rebranch.eval.metrics import format_public_feedback, format_sdk_calls, summarize_trace_for_llm
 from rebranch.exec.trace import CallRecord, Trace
 
 
@@ -103,3 +103,24 @@ def test_twin_second_prompt_pairs_draft_source_with_its_failure_trace(monkeypatc
     assert "get_object_pose" in prompts[1]
     assert "0.3100" in prompts[1]
     assert "SECRET_THETA_SENTINEL" not in prompts[1]
+
+
+def test_terminal_feedback_is_identical_in_repair_conflict_and_agentic_records():
+    """Public scoring feedback remains distinct from sensing and excludes trace theta."""
+    import json
+    from rebranch.baselines.agentic_genplan import _trace_public
+
+    trace = _trace()
+    trace.public_feedback = {"protocol_version": "t10-terminal-feedback-v1",
+                             "all_support_chains_reach_beam": False,
+                             "hold_max_tilt_deg": 6.2}
+    shared = format_public_feedback(trace)
+    for text in (summarize_trace_for_llm(trace), format_trace_feedback([trace]),
+                 format_conflict_summary([trace], [])):
+        assert shared in text
+        assert "SECRET_THETA_SENTINEL" not in text
+    public = _trace_public(trace)
+    assert public["public_feedback"] == trace.public_feedback
+    assert "SECRET_THETA_SENTINEL" not in json.dumps(public)
+    trace.calls = []
+    assert shared in format_conflict_summary([trace], [])

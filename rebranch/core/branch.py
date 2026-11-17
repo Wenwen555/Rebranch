@@ -12,7 +12,7 @@ from rebranch.core.retune import Retuner
 from rebranch.exec.evaluator import Evaluator
 from rebranch.exec.sandbox import StaticCheckError, check_policy_source
 from rebranch.exec.trace import Trace
-from rebranch.eval.metrics import format_sdk_calls, summarize_trace_for_llm
+from rebranch.eval.metrics import format_public_feedback, format_sdk_calls, summarize_trace_for_llm
 from rebranch.llm.client import LLMClient, extract_python_code
 from rebranch.llm.prompts import (
     PHYSCAP_EXTRA_DOC,
@@ -37,7 +37,7 @@ def format_conflict_summary(
     incompatible_pairs: Sequence[tuple[int, int]],
     case_solutions: Sequence[Any] | None = None,
 ) -> str:
-    """Summarize conflicting cases using strictly SDK-observable trace data (no theta)."""
+    """Summarize SDK evidence and the same public terminal feedback used by repair."""
     lines: list[str] = []
     for idx, tr in enumerate(core_traces):
         status = "SUCCESS" if tr.success else "FAILED"
@@ -53,6 +53,8 @@ def format_conflict_summary(
             f"task_failure={tr.failure or 'none'}; execution_error={tr.error or 'none'}{sol_note})"
         )
     for idx, tr in enumerate(core_traces[:3]):
+        if tr.public_feedback:
+            lines.append(f"Case {idx}: {format_public_feedback(tr)}")
         if tr.calls:
             lines.append(f"SDK evidence, Case {idx}:\n{format_sdk_calls(tr, max_calls=8)}")
     if incompatible_pairs:

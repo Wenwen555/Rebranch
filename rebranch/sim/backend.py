@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -48,6 +48,8 @@ class EpisodeResult:
     score: float
     failure: str | None = None
     safety_violation: str | None = None
+    # Task-defined terminal scoring feedback, excluding privileged latent values.
+    public_feedback: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.score = float(self.score)
@@ -88,6 +90,8 @@ class TaskBackend(ABC):
     obs_scale: dict[str, float]
     obs_api_map: dict[str, str]
     draft_policy: str
+    # Public documentation for the task's additional RobotAPI primitives.
+    extra_api_doc: str = ""
 
     @abstractmethod
     def make_episode(self, theta: dict[str, Any], seed: int = 0) -> Episode:

@@ -272,6 +272,7 @@ class HiddenMassBalanceBeamTask(TaskBackend):
     task_description = _TASK_DESCRIPTION
 
     def __init__(self) -> None:
+        """Declare latent masses and reuse the selected track's public API contract."""
         self.param_space = ParamSpace([
             Continuous("pair_mass_a_kg", 0.04, 0.075, nominal=0.055),
             Continuous("pair_mass_b_kg", 0.04, 0.075, nominal=0.055),
@@ -286,6 +287,7 @@ class HiddenMassBalanceBeamTask(TaskBackend):
             ("block_c", "zone_left", 0.0, 0.0, 2 * BLOCK_HALF_SIZE),
         ])
         if self.measurement_track == "A":
+            self.extra_api_doc = _MASS_MEASUREMENT_DOC
             self.task_description = _TASK_DESCRIPTION + _MASS_MEASUREMENT_DOC
         else:
             self.task_description = _TASK_DESCRIPTION + (
@@ -293,7 +295,7 @@ class HiddenMassBalanceBeamTask(TaskBackend):
             )
 
     def make_episode(self, theta: dict[str, Any], seed: int = 0):
-        """Build the task with friction-drift correction shared by every controller."""
+        """Build the shared physics and expose only public terminal scoring feedback."""
         model = build_hidden_mass_balance_model(theta)
         # NoSlip removes measured soft-contact creep during partial beam loading.
         # This numerical setting is common to A/B and all methods, before reset.
@@ -355,6 +357,21 @@ class HiddenMassBalanceBeamTask(TaskBackend):
                 success=success,
                 score=max(0.01, score) if success else min(-0.01, score),
                 failure=None if success else "balance_goal_not_satisfied",
+                public_feedback={
+                    "protocol_version": "t10-terminal-feedback-v1",
+                    "all_footprints_in_2d_regions": all_footprints,
+                    "all_support_chains_reach_beam": all_supported,
+                    "beam_stable_throughout_hold": stable,
+                    "released_throughout_hold": released,
+                    "withdrawn_throughout_hold": withdrawn,
+                    "hold_max_tilt_deg": max_tilt,
+                    # Bounds describe the last hold frame; flags above cover the full hold.
+                    "terminal_block_footprints": {
+                        name: {key: row[key] for key in
+                               ("left", "right", "valid", "beam_xy_bounds_m")}
+                        for name, row in final["block_footprints"].items()
+                    },
+                },
             )
 
         episode = MujocoEpisode(

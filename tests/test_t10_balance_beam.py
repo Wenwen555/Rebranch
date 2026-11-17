@@ -17,7 +17,26 @@ from rebranch.sim.kinder_scene import (
     nonstack_feasibility_witness,
 )
 from rebranch.tasks import TASKS, make_task
-from rebranch.tasks.hidden_mass_balance_beam import _step_state
+from rebranch.tasks.hidden_mass_balance_beam import _MASS_MEASUREMENT_DOC, _step_state
+
+
+def _assert_public_feedback(feedback, diagnostics):
+    """Check the public allowlist against the existing terminal score, without re-evaluation."""
+    flags = {"all_footprints_in_2d_regions", "all_support_chains_reach_beam",
+             "beam_stable_throughout_hold", "released_throughout_hold",
+             "withdrawn_throughout_hold"}
+    assert set(feedback) == flags | {"protocol_version", "hold_max_tilt_deg", "terminal_block_footprints"}
+    assert feedback["protocol_version"] == "t10-terminal-feedback-v1"
+    for name in flags | {"hold_max_tilt_deg"}:
+        assert feedback[name] == diagnostics[name]
+    assert set(feedback["terminal_block_footprints"]) == set(BLOCK_NAMES)
+    for name, row in feedback["terminal_block_footprints"].items():
+        assert set(row) == {"left", "right", "valid", "beam_xy_bounds_m"}
+        assert row == diagnostics["terminal"]["block_footprints"][name]
+    encoded = json.dumps(feedback)
+    for private in ("theta", "hidden_mass_audit_kg", "nonstack_feasibility_witness",
+                    "load_com", "gravity_line_arm"):
+        assert private not in encoded
 
 
 @pytest.mark.parametrize("track", ("a", "b"))
@@ -27,6 +46,9 @@ def test_t10_tracks_are_registered(track: str) -> None:
     task = make_task(name)
     assert type(task) is TASKS[name]
     assert task.measurement_track == track.upper()
+    assert task.extra_api_doc == (_MASS_MEASUREMENT_DOC if track == "a" else "")
+    if track == "a":
+        assert task.task_description.endswith(task.extra_api_doc)
 
 
 @pytest.mark.parametrize("permutation", range(6))
@@ -48,7 +70,8 @@ def test_t10_nominal_witness_is_physically_reachable(permutation: int) -> None:
     diagnostics = episode._hidden_mass_balance_diagnostics
     print(json.dumps({"permutation": permutation, "success": trace.success,
                       "error": trace.error, "sim_time_s": trace.sim_time,
-                      "diagnostics": diagnostics}, sort_keys=True))
+                      "diagnostics": diagnostics, "public_feedback": trace.public_feedback}, sort_keys=True))
+    _assert_public_feedback(trace.public_feedback, diagnostics)
     assert trace.error is None
     assert trace.success, diagnostics
 
@@ -62,7 +85,9 @@ def test_t10_table_and_gripper_support_are_rejected() -> None:
     table_state = _step_state(episode.model, episode.data)
     assert table_state["external_block_support"]
     assert not any(table_state["block_supported_to_beam"].values())
-    assert not episode.evaluate().success
+    result = episode.evaluate()
+    assert not result.success
+    _assert_public_feedback(result.public_feedback, episode._hidden_mass_balance_diagnostics)
 
     api = episode.api
     pos = api.get_object_pose("block_a")["pos"]
@@ -87,7 +112,9 @@ def test_t10_table_and_gripper_support_are_rejected() -> None:
     held_state = _step_state(episode.model, episode.data)
     assert held_state["external_block_support"]
     assert not held_state["block_supported_to_beam"]["block_a"]
-    assert not episode.evaluate().success
+    result = episode.evaluate()
+    assert not result.success
+    _assert_public_feedback(result.public_feedback, episode._hidden_mass_balance_diagnostics)
 
 
 def test_t10_mass_macro_returns_nan_without_physical_grasp() -> None:

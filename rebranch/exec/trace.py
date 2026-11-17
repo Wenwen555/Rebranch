@@ -40,6 +40,8 @@ class Trace:
     protocol_version: str = "unversioned"
     stdout: str = ""
     stderr: str = ""
+    # Public terminal scoring feedback; empty for unevaluated phases or tasks without it.
+    public_feedback: dict[str, Any] = field(default_factory=dict)
 
     @property
     def path(self) -> frozenset[int]:

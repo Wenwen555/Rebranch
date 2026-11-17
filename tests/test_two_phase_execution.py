@@ -24,7 +24,9 @@ def _counted_backend():
         def evaluate():
             eval_count[0] += 1
             ep.api.sim_time += 0.125
-            return old_evaluate()
+            result = old_evaluate()
+            result.public_feedback = {"protocol_version": "two-phase-toy-feedback"}
+            return result
 
         ep.evaluate = evaluate
         ep.test_eval_count = eval_count
@@ -39,6 +41,7 @@ def _assert_one_final_evaluation(trace, episode):
     assert episode.test_eval_count[0] == 1
     assert trace.sim_time == episode.sim_time
     assert trace.protocol_version == "two-phase-toy-test"
+    assert trace.public_feedback == {"protocol_version": "two-phase-toy-feedback"}
     assert len(trace.calls) == 200
     assert trace.success is False
     assert trace.error == "max_calls (200) exceeded across episode phases"
@@ -101,7 +104,8 @@ def test_run_policy_limits_remain_failures_after_successful_evaluation():
         def successful_final_evaluation():
             eval_count[0] += 1
             ep.api.sim_time += 0.125
-            return EpisodeResult(True, 1.0, safety_violation="fake-marker")
+            return EpisodeResult(True, 1.0, safety_violation="fake-marker",
+                                 public_feedback={"hold_max_tilt_deg": 0.0})
 
         ep.evaluate = successful_final_evaluation
         trace = run_policy(_policy(10), ep, theta, seed=12, **limit_kwargs)
@@ -111,6 +115,7 @@ def test_run_policy_limits_remain_failures_after_successful_evaluation():
         assert "max_" in trace.error
         assert trace.sim_time == ep.sim_time
         assert trace.safety_violation == "fake-marker"
+        assert trace.public_feedback == {"hold_max_tilt_deg": 0.0}
 
 
 def test_t10_pilot_saves_nominal_and_complete_split_traces_without_extra_rollouts(tmp_path):
@@ -159,3 +164,43 @@ def test_t10_pilot_saves_nominal_and_complete_split_traces_without_extra_rollout
         assert metrics.runtime_llm_calls == 0
     assert len(episodes) == 6
     assert all(episode.test_eval_count[0] == 1 for episode in episodes)
+
+
+def test_unevaluated_phase_has_no_terminal_feedback_or_extra_scoring():
+    """Deferred scoring adds no hold, then the existing finalizer carries feedback once."""
+    from rebranch.baselines import finalize_episode_trace
+    from rebranch.exec.sandbox import run_policy
+
+    backend, episodes = _counted_backend()
+    theta = backend.param_space.nominal()
+    ep = backend.make_episode(theta)
+    trace = run_policy(_policy(1), ep, theta, evaluate=False)
+    assert ep.test_eval_count[0] == 0
+    assert trace.public_feedback == {}
+    before = ep.sim_time
+    finalized = finalize_episode_trace(ep, trace)
+    assert ep.test_eval_count[0] == 1
+    assert ep.sim_time == before + 0.125
+    assert finalized.public_feedback == {"protocol_version": "two-phase-toy-feedback"}
+
+
+def test_agentic_execution_error_keeps_public_terminal_feedback():
+    """Public feedback cannot turn an API budget error into a successful rollout."""
+    from rebranch.baselines.agentic_genplan import _run_agentic_policy
+    from rebranch.sim.backend import EpisodeResult
+
+    backend, episodes = _counted_backend()
+    theta = backend.param_space.nominal()
+    ep = backend.make_episode(theta)
+    eval_count = []
+
+    def evaluate():
+        """Supply a successful physical score while counting finalization."""
+        eval_count.append(1)
+        return EpisodeResult(True, 1.0, public_feedback={"hold_max_tilt_deg": 0.0})
+
+    ep.evaluate = evaluate
+    trace = _run_agentic_policy(_policy(2), ep, theta, seed=0, max_calls=1)
+    assert len(eval_count) == 1
+    assert not trace.success and "max_calls" in trace.error
+    assert trace.public_feedback == {"hold_max_tilt_deg": 0.0}

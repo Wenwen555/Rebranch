@@ -247,8 +247,9 @@ def finalize_episode_trace(
     *,
     execution_error: str | None = None,
 ) -> Trace:
-    """Run the one terminal evaluation and apply it without hiding execution errors."""
+    """Apply one terminal evaluation and public feedback without hiding execution errors."""
     eval_res = ep.evaluate()
+    trace.public_feedback = eval_res.public_feedback
     error = execution_error or trace.error
     if error is not None:
         trace.success = False

@@ -39,7 +39,7 @@ AGENTIC_API_DOC = API_DOC.replace(
 )
 
 
-AGENTIC_SYSTEM = """You are an autonomous experimenter. Use the available tools to inspect the task, write and run diagnostic RobotAPI policies, inspect complete SDK feedback, write analysis scripts, revise policies, and explicitly freeze one final policy. Choose development cases and experiments yourself. Infer physical properties from public observations and experiments; privileged parameter values are unavailable. A run's outcome and SDK trace are observations; its parameter vector is withheld. Every experiment costs one rollout and every tool decision costs one LLM request. Return exactly one JSON object with keys "tool" and "arguments". Put all tool parameters inside the "arguments" object, using {} for parameterless tools. Example: {"tool": "inspect_task", "arguments": {}}."""
+AGENTIC_SYSTEM = """You are an autonomous experimenter. Use the available tools to inspect the task, write and run diagnostic RobotAPI policies, inspect complete SDK feedback, write analysis scripts, revise policies, and explicitly freeze one final policy. Choose development cases and experiments yourself. Infer physical properties from public observations and experiments; privileged parameter values are unavailable. A run's outcome and SDK trace are observations; its parameter vector is withheld. Every experiment costs one rollout and every tool decision costs one LLM request. Return exactly one JSON object with keys "tool" and "arguments". Put all tool parameters inside the "arguments" object, using {} for parameterless tools. Wire-format example: {"tool": "write_policy", "arguments": {"source": "<Python source defining run(api)>"}}. The placeholder illustrates the format; author your own source and choose any available tool."""
 
 
 def _public_json_value(value: Any) -> Any:
@@ -84,7 +84,7 @@ def _safe_analysis(script: str, data: Any) -> Any:
 
 
 def _run_agentic_policy(source: str, episode, theta: dict[str, Any], *, seed: int, max_calls: int) -> Trace:
-    """Agentic-only executor for stdlib/numpy/scipy policies with local RobotAPI caps."""
+    """Execute a numeric policy and retain its public terminal feedback under API caps."""
     try:
         tree = ast.parse(source, filename="<agentic-policy>")
     except SyntaxError as exc:
@@ -167,7 +167,8 @@ def _run_agentic_policy(source: str, episode, theta: dict[str, Any], *, seed: in
         safety_violation=result.safety_violation, error=error,
         sim_time=float(getattr(episode, "sim_time", 0.0)), wall_time=time.perf_counter()-before,
         protocol_version=getattr(episode, "protocol_version", "unversioned"),
-        stdout=stdout.getvalue(), stderr=stderr.getvalue())
+        stdout=stdout.getvalue(), stderr=stderr.getvalue(),
+        public_feedback=result.public_feedback)
 
 
 def _run_agentic_policy_source_check(source: str) -> None:
@@ -191,11 +192,13 @@ def _run_agentic_policy_source_check(source: str) -> None:
     check_policy_source(ast.unparse(checked_tree))
 
 def _trace_public(trace: Trace) -> dict[str, Any]:
+    """Expose SDK data and task-authorized terminal feedback, never trace theta."""
     return {
         "success": trace.success,
         "score": trace.score,
         "failure": trace.failure,
         "execution_error": trace.error,
+        "public_feedback": trace.public_feedback,
         "sdk_calls": [
             {"name": c.name, "args": c.args, "kwargs": c.kwargs,
              "result": c.result, "obs": c.obs, "sim_time": c.sim_time}
@@ -218,7 +221,7 @@ def _compact_inspect_history(transcript: list[dict[str, Any]]) -> None:
         entry["tool_result"] = {
             key: run[key] for key in (
                 "run_id", "case_index", "success", "score", "failure",
-                "execution_error", "sim_time",
+                "execution_error", "sim_time", "public_feedback",
             )
         } | {"n_sdk_calls": len(run["sdk_calls"]),
              "details": "Older inspection summarized. Use inspect_run to reread it or run_analysis to aggregate complete stored runs, including SDK calls and stdout/stderr."}
@@ -244,8 +247,9 @@ def run_agentic_genplan(
     *, seed: int = 0, max_rollouts: int = 2000, max_llm_calls: int = 8,
     n_dev_cases: int = 24, max_policy_calls: int = 200,
 ) -> BaselineResult:
-    """Run autonomous development using JSON tool requests with nested arguments."""
+    """Run autonomous tools with backend API documentation and shared public feedback."""
     t0 = time.perf_counter()
+    api_doc = AGENTIC_API_DOC + backend.extra_api_doc
     rng = np.random.default_rng(seed)
     dev_cases = [backend.param_space.sample(rng) for _ in range(max(1, n_dev_cases))]
     calls = 0
@@ -291,7 +295,7 @@ def run_agentic_genplan(
         """Dispatch the tool and argument object unpacked at the JSON response boundary."""
         nonlocal policy_source, test_source, rollouts, frozen, stop_reason, last_error
         if tool == "inspect_task":
-            return {"task_description": backend.task_description, "robot_api": AGENTIC_API_DOC,
+            return {"task_description": backend.task_description, "robot_api": api_doc,
                     "available_tools": ["write_policy", "write_test", "run_experiment", "run_test",
                         "inspect_run", "run_analysis", "freeze_policy"]}
         if tool in {"write_policy", "write_test"}:
@@ -340,7 +344,8 @@ def run_agentic_genplan(
                 result_ids.append(record["run_id"])
                 summaries.append({"run_id": record["run_id"], "case_index": idx,
                                   "success": tr.success, "score": tr.score,
-                                  "failure": tr.failure, "execution_error": tr.error})
+                                  "failure": tr.failure, "execution_error": tr.error,
+                                  "public_feedback": tr.public_feedback})
             return {"run_ids": result_ids, "results": summaries, "source_kind": source_kind,
                     "remaining_rollouts": max_rollouts - rollouts}
         if tool == "inspect_run":
@@ -372,9 +377,9 @@ def run_agentic_genplan(
         "inspect_task": {"arguments": {}, "returns": "task description, RobotAPI specification, no draft implementation, and tool capabilities"},
         "write_policy": {"arguments": {"source": "Python source defining run(api); math/numpy/scipy imports allowed"}, "returns": "accepted/error and source sha256"},
         "write_test": {"arguments": {"source": "Python diagnostic/test policy defining run(api)"}, "returns": "accepted/error and source sha256"},
-        "run_experiment": {"arguments": {"source_kind": "policy|test (default policy)", "case_indices": "required list of integers in [0, n_dev_cases)"}, "returns": "run_ids, per-case success/score/failure/execution_error summaries, and remaining_rollouts"},
-        "run_test": {"arguments": {"case_indices": "required list of integers in [0, n_dev_cases); runs write_test source"}, "returns": "run_ids, per-case success/score/failure/execution_error summaries, and remaining_rollouts"},
-        "inspect_run": {"arguments": {"run_id": "integer returned by run_experiment/run_test"}, "returns": "full SDK trace, task result, stdout/stderr, no hidden theta; only the two latest full inspections remain in prompt history"},
+        "run_experiment": {"arguments": {"source_kind": "policy|test (default policy)", "case_indices": "required list of integers in [0, n_dev_cases)"}, "returns": "run_ids, per-case results and public terminal scoring feedback, and remaining_rollouts"},
+        "run_test": {"arguments": {"case_indices": "required list of integers in [0, n_dev_cases); runs write_test source"}, "returns": "run_ids, per-case results and public terminal scoring feedback, and remaining_rollouts"},
+        "inspect_run": {"arguments": {"run_id": "integer returned by run_experiment/run_test"}, "returns": "full SDK trace, task result and public terminal scoring feedback, stdout/stderr, no hidden theta; only the two latest full inspections remain in prompt history"},
         "run_analysis": {"arguments": {"script": "Python source defining analyze(data); can import math/statistics/numpy/scipy"}, "returns": "analysis result or error"},
         "freeze_policy": {"arguments": {}, "returns": "frozen=true and source sha256"},
     }
@@ -382,11 +387,11 @@ def run_agentic_genplan(
         "type": "object", "required": ["tool", "arguments"],
         "properties": {"tool": {"enum": list(schemas)}, "arguments": {"type": "object"}},
     }
-    prompt = json.dumps({"task": backend.task_description, "robot_api": AGENTIC_API_DOC,
+    prompt = json.dumps({"task": backend.task_description, "robot_api": api_doc,
         "response_schema": response_schema,
-        "response_example": {"tool": "inspect_task", "arguments": {}},
+        "response_example": {"tool": "write_policy", "arguments": {"source": "<Python source defining run(api)>"}},
         "instruction": "Autonomously inspect, write and run diagnostics, select development cases, revise, then explicitly freeze a generalized policy.",
-        "tools": schemas, "n_dev_cases": len(dev_cases), "legal_case_indices": [0, len(dev_cases)-1],
+        "tools": schemas, "n_dev_cases": len(dev_cases), "case_index_range": {"min_inclusive": 0, "max_inclusive": len(dev_cases)-1},
         "remaining_rollouts": max_rollouts-rollouts, "remaining_llm_requests": max_llm_calls-calls,
         "interaction_history": transcript}, ensure_ascii=False, indent=2)
     while calls < max_llm_calls and not frozen:
@@ -413,10 +418,10 @@ def run_agentic_genplan(
         transcript.append({"action": action, "tool_result": tool_out})
         if action["tool"] == "inspect_run":
             _compact_inspect_history(transcript)
-        prompt = json.dumps({"task": backend.task_description, "robot_api": AGENTIC_API_DOC, "tools": schemas,
+        prompt = json.dumps({"task": backend.task_description, "robot_api": api_doc, "tools": schemas,
             "response_schema": response_schema,
-            "response_example": {"tool": "inspect_task", "arguments": {}},
-            "n_dev_cases": len(dev_cases), "legal_case_indices": [0, len(dev_cases)-1],
+            "response_example": {"tool": "write_policy", "arguments": {"source": "<Python source defining run(api)>"}},
+            "n_dev_cases": len(dev_cases), "case_index_range": {"min_inclusive": 0, "max_inclusive": len(dev_cases)-1},
             "remaining_rollouts": max_rollouts-rollouts,
             "remaining_llm_requests": max_llm_calls-calls,
             "interaction_history": transcript,

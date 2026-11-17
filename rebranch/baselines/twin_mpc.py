@@ -192,9 +192,10 @@ def run_twin_mpc(
                     "fresh SDK observations, skips this candidate's already executed actuator-call prefix, and "
                     "executes only its next actuator call. Candidate forecasts are evaluated "
                     "for a finite H-action horizon, but only the first action is executed before replanning.")
+            # These failures were evaluated on the draft, so pair them with that source.
             prompt = build_single_twin_prompt(
                 task_description=task_description,
-                current_code=candidates[-1],
+                current_code=backend.draft_policy,
                 failure_summary=summarize_trace_for_llm(fail_tr),
             )
             resp = llm.complete(prompt, system=SYSTEM_PROMPT, temperature=0.2)
