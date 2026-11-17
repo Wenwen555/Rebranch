@@ -24,27 +24,37 @@ T10 是受 KinDER 启发的 PiPER-X 平台变体，直接使用 KinDER `Generate
 
 T10 用作物理闭环与自动合成验证任务；AGP B 已解历史实例，未知质量配重本身已可由已有基线解决。
 
-## 实验结果与在途试验
+## 实验结果
 
-### 历史评测结果（新增公共终态反馈前，`t10-v2-noslip2`）
+### 公共终态反馈先导试验（`t10-terminal-feedback-v1`）
 
-下表记录 `seed 0` 在已知测试集（`hidden` 50 例 + 域内边缘偏置采样 `boundary` 20 例）上的已完成生成结果。A/B 轨道各自独立生成程序；`agentic_genplan` 为 RoboCode / AgenticGenPlan 的 RobotAPI 平台适配，`physcap_appendix` 为 PhysCaP 论文附录的仅 A 轨道平台适配（参见 [SOURCE.md](rebranch/baselines/physcap_appendix_assets/SOURCE.md)）。PhysCaP A 旧在线批次已暂停，未纳入下表。
+在物理协议 `t10-v2-noslip2` 与 `seed 0` 下完成 4-job 配对评测（每 job 上限 8 模型请求、2000 dev rollouts）。所有程序先冻结再于新 `theta` 抽样集（`hidden` `2026111701` 50 例 + 域内边缘偏置 `boundary` `2026111702` 20 例）运行，共 280 计分与 4 个 nominal，最终评测 0 执行错误、0 在线 LLM；四 job 合计 19 模型请求、511667 tokens、1556 dev rollouts。
 
-| 方法 / 参照 | 轨道 | Hidden | Boundary | 预算与执行说明 |
+| 方法 | 轨道 | Hidden | Boundary | 开发物理回合 / 模型请求 |
 | --- | --- | --- | --- | --- |
-| `t10_fixed_blind` | A | 5/50 | 4/20 | 0 LLM（固定落点控制，读取公开 pose 做放置反馈） |
-| `t10_parameter_only` | A | 11/50 | 9/20 | 0 LLM，1992 开发 rollout |
-| `AgenticGenPlan` (`agentic_genplan`) | A | 29/50 | 16/20 | 8 模型请求，4 开发 rollout |
-| `AgenticGenPlan` (`agentic_genplan`) | B | 50/50 | 20/20 | 8 模型请求，4 开发 rollout；固定三次试放→读倾角→估质量→配平，测试期 0 在线 LLM，132–138 API |
-| 手写称重 + 解析配重（自定义能力参照） | A | 50/50 | 20/20 | 0 LLM |
-| 手写倾角反馈修后（自定义能力参照） | B | 50/50 | 20/20 | 0 LLM |
+| `ReBranch` | A | 50/50 | 20/20 | 500 / 1 |
+| `AgenticGenPlan` | A | 50/50 | 20/20 | 48 / 7 |
+| `ReBranch` | B | 50/50 | 20/20 | 1001 / 3 |
+| `AgenticGenPlan` | B | 0/50 | 0/20 | 7 / 8 |
 
-- **物理验收与特权参照（`oracle`，非 LLM 成绩）**：在已知验收集（A / B 各 50 `hidden` + 20 `boundary`）上全部通过，共 140/140，均消耗 78 API。
+A 轨成功率持平，ReBranch 模型请求更少，AGP 物理开发与执行成本更低；两项 ReBranch 均通过普通 `REPAIR` 生成 probe，未触发专门 `BRANCH` 合成。AGP B 最终重写版本在第 8 次请求冻结且未作开发执行，70 例均在 probe 抓取或回收未满足自检时提前返回而未进入配重，属当前 `seed 0` 候选验证与执行差异，不表示 AGP 不能解 T10。
 
-### 公共终态反馈协议与先导试验（`t10-terminal-feedback-v1`）
+- **`oracle`（特权参照，非 LLM）**：已知验收集 A/B 各 70/70（共 140/140）。
 
-- **公平性补丁（commit `f46ce15`）**：将公共终态评分摘要由 `EpisodeResult` 经 `Trace` 同步提供给 ReBranch 与 AGP，并通过显式 allowlist 排除 `theta`、真实质量、`witness` 与质量加权 COM（公开评分反馈，不引入额外在线 sensor）。
-- **四 job 先导试验**：`seed 0 × A/B × ReBranch/AGP` 已启动，待收齐结果。统一使用 `gpt-6.1-sol/low`，每 job 上限 8 模型请求、2000 开发 rollout，测试期冻结程序 0 在线 LLM；开发冻结后将在新最终集（50 + 20，共 280 计分与 4 个必要 nominal）上统一评估。
+<details><summary>历史评测（新增公共终态反馈前）</summary>
+
+`seed 0` 已知历史集（旧 `theta` seed `2026`/`3026`），物理协议同为 `t10-v2-noslip2`，生成反馈协议不同（保留旧 B 70/70）：
+
+| 方法 / 参照 | 轨道 | Hidden | Boundary | 预算与说明 |
+| --- | --- | --- | --- | --- |
+| `t10_fixed_blind` | A | 5/50 | 4/20 | 0 LLM（固定落点控制） |
+| `t10_parameter_only` | A | 11/50 | 9/20 | 0 LLM，1992 dev |
+| `t10_mass_balance`（手写称重+配重） | A | 50/50 | 20/20 | 0 LLM |
+| `t10_tilt_feedback`（手写倾角反馈） | B | 50/50 | 20/20 | 0 LLM |
+| `AgenticGenPlan` | A | 29/50 | 16/20 | 8 请求，4 dev |
+| `AgenticGenPlan` | B | 50/50 | 20/20 | 8 请求，4 dev |
+
+</details>
 
 ## 代码结构
 
@@ -79,6 +89,6 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 
 ## Roadmap
 
-1. 收齐 `t10-terminal-feedback-v1` 有限先导结果，核查 LLM 与 probe 数据流及真实资源效率。
-2. 依据实际实验结果决定后续多 seed 或观测干预实验。
-3. 在具备明确机制证据的任务上实现 `SandboxDiagnosticReport`（配对噪声冲突、完整 probe 特征与分布阈值标定，支持连续反馈，仅在有证据时启用分割）。
+1. [x] 收齐 `t10-terminal-feedback-v1` 有限先导结果，核查 LLM 与 probe 数据流及真实资源效率。
+2. [ ] 依据实际实验结果决定后续多 seed 或观测干预实验。
+3. [ ] 在具备明确机制证据的任务上实现 `SandboxDiagnosticReport`（配对噪声冲突、完整 probe 特征与分布阈值标定，支持连续反馈，仅在有证据时启用分割）。
